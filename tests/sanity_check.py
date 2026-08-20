@@ -1,11 +1,3 @@
-"""
-Pre-Day-1 sanity check.
-Confirms your GROQ_API_KEY, environment, and LangChain + Groq integration
-are all working before you start building anything real.
-
-Run with: python tests/sanity_check.py
-"""
-
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 import os
