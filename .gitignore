@@ -1,0 +1,71 @@
+# === Secrets — never commit these ===
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# === Python ===
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# === Jupyter  ===
+.ipynb_checkpoints/
+
+# === Local model weights & downloaded artifacts  ===
+models/
+*.gguf
+*.safetensors
+*.bin
+huggingface_cache/
+.cache/
+
+# === Vector DB local data  ===
+qdrant_storage/
+qdrant_data/
+*.qdrant/
+
+# === Docker ===
+*.env.docker
+docker-compose.override.yml
+
+# === Streamlit ===
+.streamlit/secrets.toml
+
+# === Logs, temp files, benchmark output  ===
+*.log
+logs/
+tmp/
+*.tmp
+benchmark_results/
+
+# === RAG intermediate artifacts  ===
+data/chunks/
+data/processed/
+
+# === OS files ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Editor/IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Git tag/output noise ===
+*.orig
