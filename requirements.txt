@@ -1,19 +1,19 @@
+
 # Install with: pip install -r requirements.txt
 
 langchain>=1.3.14
-langchain-google-genai>=2.0.0
+langchain-groq>=0.2.0
 langgraph>=1.0.0
 langchain-qdrant>=1.1.0
 langchain-openai>=1.5.1
 python-dotenv>=1.0.1
 streamlit>=1.40.0
 
+langchain-huggingface>=1.2.2
+sentence-transformers>=5.2.0
+
 # (Day 4) for the Qdrant client itself, separate from the LangChain wrapper:
 # qdrant-client>=1.10.0
-
-# Optional fallback embeddings if Gemini's embedding endpoint has issues —
-# langchain-huggingface>=1.2.2
-# sentence-transformers>=5.2.0
 
 # (Days 8-9) for the FastAPI backend and reliability middleware:
 # fastapi>=0.115.0
