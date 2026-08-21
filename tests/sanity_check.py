@@ -1,18 +1,9 @@
-from langchain_groq import ChatGroq
-from dotenv import load_dotenv
-import os
+from src.llm import structured_llm, QueryAnalysis
 
-load_dotenv()
+result = structured_llm.invoke("I'm really frustrated — why does my code keep crashing?")
 
-if not os.getenv("GROQ_API_KEY"):
-    raise SystemExit(
-        "GROQ_API_KEY not found. Check that .env exists in this folder "
-        "and contains GROQ_API_KEY=your_key_here"
-    )
+print(result)
+print(type(result))
 
-llm = ChatGroq(model="openai/gpt-oss-120b")  # check console.groq.com for current model names if this errors
-
-response = llm.invoke("Say hello in one sentence.")
-
-print("Success — Groq responded:")
-print(response.content)
+assert isinstance(result, QueryAnalysis), "Output is not a QueryAnalysis instance!"
+print("✅ Structured output check passed")
