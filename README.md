@@ -1,4 +1,4 @@
-#RAG Assistant
+# RAG Assistant
 
 An AI assistant built with **Groq** as the primary LLM, orchestrated through **LangChain + LangGraph**, with **RAG** over a Qdrant vector store, tool-calling, and a **local vLLM** model as an automatic fallback provider.
 
