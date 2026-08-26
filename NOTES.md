@@ -15,3 +15,15 @@
 - Confirmed openai/gpt-oss-120b supports function calling cleanly via Groq — no issues.
 - Gotcha hit: ModuleNotFoundError: No module named 'src' when running sanity_check.py — the sys.path.append fix from Day 1 was missing from the rewritten test file. Re-added it; worth keeping that boilerplate at the top of every test file going forward.
 - Full message trace from the chained-tool-call test is a good candidate for the Day 6 architecture diagram — shows the real reasoning → tool → observation loop end to end.
+
+## Ingestion & Chunking
+
+Loaded 2 source PDFs (xvectors_speaker_recognition.pdf, ecapa_tdnn_speaker_verification.pdf)
+via PyPDFLoader — 10 pages total, 68 chunks after splitting. All chunks verified to carry
+source + page metadata.
+
+Chunking: RecursiveCharacterTextSplitter, chunk_size=1000, chunk_overlap=150,
+separators=[\n\n, \n, ". ", " ", ""] (paragraph/sentence-aware, falls back to hard cut).
+Reasonable starting point for dense technical PDF content — not tuned yet, will revisit
+if Day 4 retrieval tests surface fragmented or noisy hits.
+
