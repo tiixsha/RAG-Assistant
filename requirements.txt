@@ -12,8 +12,7 @@ streamlit>=1.40.0
 langchain-huggingface>=1.2.2
 sentence-transformers>=5.2.0
 
-# (Day 4) for the Qdrant client itself, separate from the LangChain wrapper:
-# qdrant-client>=1.10.0
+qdrant-client>=1.10.0
 
 # (Days 8-9) for the FastAPI backend and reliability middleware:
 # fastapi>=0.115.0

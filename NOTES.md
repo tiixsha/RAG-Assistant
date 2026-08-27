@@ -27,3 +27,36 @@ separators=[\n\n, \n, ". ", " ", ""] (paragraph/sentence-aware, falls back to ha
 Reasonable starting point for dense technical PDF content — not tuned yet, will revisit
 if Day 4 retrieval tests surface fragmented or noisy hits.
 
+## Embeddings & Vector DB
+
+Set up Qdrant via Docker, embedded chunks locally with HuggingFaceEmbeddings
+(sentence-transformers/all-MiniLM-L6-v2) — Groq has no embeddings API, so chat (Groq)
+and embeddings (local) are two separate models for two separate jobs, documented as
+a deliberate architecture choice, not a compromise. Upserted into Qdrant via
+QdrantVectorStore.from_documents(), wrapped as a retriever (k=3), tested with 3
+sample queries against the actual corpus (x-vectors extraction, ECAPA-TDNN
+architecture, evaluation methodology).
+
+Finding: initial retrieval was pulling bibliography/references chunks into top-k
+results (e.g. citation lists like "[1] D. Snyder... X-vectors: Robust DNN embeddings"
+scoring high on an x-vector query, purely from keyword/topic overlap in citation
+titles, not actual content relevance).
+
+Fix: added strip_references() in rag.py — detects each paper's References/
+Bibliography heading via regex and truncates that page's content there, dropping
+all subsequent pages before chunking. Chose this over a per-chunk citation-density
+heuristic: it fixes the problem structurally (using document structure) rather than
+probabilistically filtering symptoms after the fact, avoids threshold-tuning, and
+generalizes to any future academic-paper source.
+
+Regex needed two iterations to handle real-world heading variance:
+1. `\n\s*(references|bibliography)\s*\n` — missed ECAPA's "7. References" (numbered
+   heading) and a heading at the very start of a page (no leading \n to anchor on).
+2. Final: `(?:^|\n)\s*\d*\.?\s*(references|bibliography)\s*\n` — handles optional
+   section numbering and start-of-page headings.
+
+Result: chunk count 68 -> 60 (x-vectors stripped) -> 54 (ECAPA stripped, after regex
+fix). Reran all 3 test queries post-fix: no bibliography chunks in any top-3 result.
+Query 3 (evaluation) hits are now real content but somewhat generic/introductory —
+flagged as an area to revisit if retrieval quality matters more in a later day, not
+blocking for Day 4's scope.
