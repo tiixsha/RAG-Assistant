@@ -60,3 +60,66 @@ fix). Reran all 3 test queries post-fix: no bibliography chunks in any top-3 res
 Query 3 (evaluation) hits are now real content but somewhat generic/introductory —
 flagged as an area to revisit if retrieval quality matters more in a later day, not
 blocking for Day 4's scope.
+
+## Local Deployment with vLLM (WSL2 + RTX 3050 6GB)
+
+Goal: serve a small quantized model locally via vLLM, exposed through the same
+LangChain ChatOpenAI interface as Groq (per roadmap: one-line swap for Day 9's
+fallback chaining). Chose Qwen2.5-1.5B-Instruct (fp16, not quantized) as a
+hardware-driven simplification for 6GB VRAM — documenting per roadmap's own
+"CPU + tiny model is fine... document as hardware-constrained simplification"
+guidance.
+
+vLLM has no native Windows support; ran via WSL2 (Ubuntu 22.04) instead of
+bare Windows. This surfaced a chain of environment issues, each fixed in turn:
+
+1. RuntimeError: UVA is not available — known vLLM-on-WSL2 GitHub issue (GPU
+   passthrough works, but CUDA Unified Virtual Addressing isn't fully
+   supported under WSL2's passthrough). Fix: export VLLM_WSL2_ENABLE_PIN_MEMORY=1
+
+2. Failed to find C compiler / Python.h missing — WSL's minimal install
+   lacked build-essential (gcc) initially, then lacked python3.10-dev
+   (Python's C headers, a separate package from the interpreter). Both
+   needed for Triton's runtime JIT kernel compilation.
+   Fix: sudo apt install build-essential python3.10-dev -y
+
+3. Can't initialize NVML / 0 active drivers found — after a WSL restart,
+   PyTorch's own NVML binding failed even though system-level `nvidia-smi`
+   worked fine. Root cause: PyTorch defaults to an NVML-based CUDA check
+   that's flaky under WSL2's driver passthrough.
+   Fix: export PYTORCH_NVML_BASED_CUDA_CHECK=0
+        export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
+
+4. ValueError: No available memory for the cache blocks (KV cache = negative) —
+   --gpu-memory-utilization 0.5 (3GB of 6GB) wasn't enough once model weights
+   (2.98 GiB) + CUDA context + activation memory were accounted for, leaving
+   nothing for the KV cache pool itself.
+   Fix: raised --gpu-memory-utilization to 0.8
+
+5. RuntimeError: Could not find nvcc / cuda_home doesn't exist — FlashInfer's
+   fast sampling kernel needs the full CUDA toolkit (nvcc) to JIT-compile;
+   WSL only had the pip-installed CUDA runtime libs, not the toolkit.
+   Fix: export VLLM_USE_FLASHINFER_SAMPLER=0 (falls back to vLLM's built-in
+   PyTorch-native sampler — correctness unaffected, small speed cost only)
+
+Final working launch command (env vars must be re-exported every new shell
+session, they don't persist):
+  export VLLM_WSL2_ENABLE_PIN_MEMORY=1
+  export PYTORCH_NVML_BASED_CUDA_CHECK=0
+  export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
+  export VLLM_USE_FLASHINFER_SAMPLER=0
+  vllm serve Qwen/Qwen2.5-1.5B-Instruct --gpu-memory-utilization 0.8 --max-model-len 2048 --port 8001
+
+Verified working: /v1/models and /v1/chat/completions both return correctly
+via curl. Connected via LangChain's ChatOpenAI(base_url="http://localhost:8001/v1",
+model="Qwen/Qwen2.5-1.5B-Instruct") in rag.py — same interface as ChatGroq,
+confirming the roadmap's Day 9 fallback-chaining premise holds.
+
+Startup is slow (~5-10 min cold: model download/load + torch.compile +
+CUDA graph capture), largely unavoidable on this hardware — first
+torch.compile pass alone took 102s. Compile artifacts cache to disk after
+a successful run, so subsequent starts load faster.
+
+Note for README: worth a one-line mention that FlashInfer's sampler is
+disabled here specifically due to no CUDA toolkit/nvcc in this WSL2
+environment — a legitimate environment constraint, not a design flaw.

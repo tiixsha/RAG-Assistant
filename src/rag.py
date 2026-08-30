@@ -14,7 +14,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
-
+from langchain_openai import ChatOpenAI 
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
@@ -31,6 +31,12 @@ REFERENCES_HEADING = re.compile(
 COLLECTION_NAME = "speaker_embedding_papers"
 QDRANT_URL = "http://localhost:6333"
 
+local_llm = ChatOpenAI(                          # ← add this block
+    base_url="http://localhost:8001/v1",
+    api_key="not-needed",
+    model="Qwen/Qwen2.5-1.5B-Instruct",
+    temperature=0.7,
+)
 
 def get_embeddings():
     return HuggingFaceEmbeddings(

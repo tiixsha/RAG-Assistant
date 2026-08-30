@@ -68,4 +68,4 @@ desktop.ini
 *~
 
 # === Git tag/output noise ===
-*.orig
+*.origvllm-env/
