@@ -120,6 +120,32 @@ CUDA graph capture), largely unavoidable on this hardware — first
 torch.compile pass alone took 102s. Compile artifacts cache to disk after
 a successful run, so subsequent starts load faster.
 
-Note for README: worth a one-line mention that FlashInfer's sampler is
-disabled here specifically due to no CUDA toolkit/nvcc in this WSL2
-environment — a legitimate environment constraint, not a design flaw.
+# Pipeline Wire-Up
+
+Assembled the full LangGraph pipeline in src/graph.py: retrieve -> agent -> generate,
+per roadmap. Key pieces:
+- retrieve_node: upfront Qdrant search against the user's query
+- agent_node: ReAct agent (calculator, doc_search, and a new retrieve_papers tool
+  backed by the same Qdrant retriever), grounded via a SystemMessage injecting the
+  retrieved context before the agent runs
+- generate_node: pass-through, kept as a distinct node for the diagram and as a
+  future post-processing hook (Day 9+)
+
+Two real bugs hit and fixed during this step:
+1. Message duplication — GraphState used operator.add as the messages reducer, but
+   create_react_agent's invoke() returns full conversation history (including the
+   echoed human message), not just new turns. Returning result["messages"] wholesale
+   double-added the human message. Fixed by slicing to only the new messages:
+   result["messages"][len(input_messages):]
+2. Retrieval never actually used — retrieve_node computed retrieved_context but
+   agent_node never passed it to the agent, so the LLM answered from its own
+   training knowledge instead of the retrieved paper content (confirmed by checking
+   whether answers cited real ablation-table numbers vs. generic ML knowledge).
+   Fixed by injecting retrieved_context as a SystemMessage before the agent runs.
+   Verified fix: reran the ECAPA-TDNN test query, answer now cites actual paper
+   content (ablation rows B.1/B.2/C.1-3, EER/MinDCF figures from the real table).
+
+Also made QDRANT_URL and vLLM's base_url configurable via environment variables
+(os.getenv with localhost defaults) in rag.py and graph.py, so a future Docker/
+Compose setup can point them at container-network addresses without code changes.
+

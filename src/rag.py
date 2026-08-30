@@ -5,6 +5,7 @@ src/rag.py — RAG pipeline: ingestion, chunking, retrieval.
 import sys
 from pathlib import Path
 import re
+import os
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
@@ -29,15 +30,16 @@ REFERENCES_HEADING = re.compile(
 )
 
 COLLECTION_NAME = "speaker_embedding_papers"
-QDRANT_URL = "http://localhost:6333"
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
-local_llm = ChatOpenAI(                          # ← add this block
-    base_url="http://localhost:8001/v1",
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8001/v1")
+
+local_llm = ChatOpenAI(
+    base_url=VLLM_BASE_URL,
     api_key="not-needed",
     model="Qwen/Qwen2.5-1.5B-Instruct",
     temperature=0.7,
 )
-
 def get_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
