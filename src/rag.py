@@ -14,8 +14,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
-from langchain_openai import ChatOpenAI 
+from langchain_openai import ChatOpenAI
+
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
@@ -26,13 +26,21 @@ SOURCE_FILES = [
 
 REFERENCES_HEADING = re.compile(
     r"(?:^|\n)\s*\d*\.?\s*(references|bibliography)\s*\n",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 COLLECTION_NAME = "speaker_embedding_papers"
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
-VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8001/v1")
+QDRANT_URL = os.getenv(
+    "QDRANT_URL",
+    "http://localhost:6333"
+)
+
+VLLM_BASE_URL = os.getenv(
+    "VLLM_BASE_URL",
+    "http://localhost:8001/v1"
+)
+
 
 local_llm = ChatOpenAI(
     base_url=VLLM_BASE_URL,
@@ -40,6 +48,8 @@ local_llm = ChatOpenAI(
     model="Qwen/Qwen2.5-1.5B-Instruct",
     temperature=0.7,
 )
+
+
 def get_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -68,8 +78,22 @@ def build_vectorstore(chunks, recreate: bool = False):
     return vectorstore
 
 
-def get_retriever(vectorstore, k: int = 3):
-    return vectorstore.as_retriever(search_kwargs={"k": k})
+def get_retriever(vectorstore, k: int = 5):
+    """
+    Create an MMR retriever.
+
+    MMR balances relevance with diversity so that the retrieved
+    chunks are less likely to contain duplicate or near-duplicate
+    information.
+    """
+    return vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": k,
+            "fetch_k": 10,
+            "lambda_mult": 0.7,
+        },
+    )
 
 
 def strip_references(documents):
@@ -93,6 +117,7 @@ def strip_references(documents):
             if match:
                 doc.page_content = doc.page_content[:match.start()]
                 truncated_here = True
+
                 print(
                     f"Stripped references from {Path(source).name} "
                     f"at page {doc.metadata.get('page')}"
@@ -119,9 +144,12 @@ def load_documents(
 
         loader = PyPDFLoader(str(pdf_path))
         docs = loader.load()
+
         all_docs.extend(docs)
 
-        print(f"Loaded {filename}: {len(docs)} pages")
+        print(
+            f"Loaded {filename}: {len(docs)} pages"
+        )
 
     return strip_references(all_docs)
 
@@ -162,41 +190,71 @@ def verify_metadata(chunks):
         f"\nMetadata check passed: all {len(chunks)} "
         f"chunks have source + page metadata."
     )
+
     print(f"Sources present: {sources}")
 
 
 if __name__ == "__main__":
+
     documents = load_documents()
+
     chunks = chunk_documents(documents)
+
     verify_metadata(chunks)
 
     sample = chunks[0]
 
     print("\n--- Sample chunk ---")
-    print(f"Source: {Path(sample.metadata['source']).name}")
-    print(f"Page:   {sample.metadata.get('page')}")
-    print(f"Text (first 200 chars): {sample.page_content[:200]!r}")
-    print(f"\nTotal chunks ready for embedding: {len(chunks)}")
+    print(
+        f"Source: {Path(sample.metadata['source']).name}"
+    )
+    print(
+        f"Page:   {sample.metadata.get('page')}"
+    )
+    print(
+        f"Text (first 200 chars): "
+        f"{sample.page_content[:200]!r}"
+    )
 
-    vectorstore = build_vectorstore(chunks, recreate=True)
+    print(
+        f"\nTotal chunks ready for embedding: {len(chunks)}"
+    )
+
+    vectorstore = build_vectorstore(
+        chunks,
+        recreate=True
+    )
+
     retriever = get_retriever(vectorstore)
 
     test_queries = [
         "How does the x-vector system extract speaker embeddings?",
         "What is the ECAPA-TDNN architecture?",
         "How is speaker verification evaluated in these papers?",
+        "What is statistics pooling in the x-vector system?",
+        "What are the main components of ECAPA-TDNN?",
     ]
 
     for query in test_queries:
-        print(f"\n--- Query: {query!r} ---")
+
+        print(
+            f"\n--- Query: {query!r} ---"
+        )
 
         results = retriever.invoke(query)
 
         for i, doc in enumerate(results):
-            src = Path(doc.metadata["source"]).name
+
+            src = Path(
+                doc.metadata["source"]
+            ).name
+
             page = doc.metadata.get("page")
 
             print(
-                f"  [{i}] {src} (p.{page}): "
-                f"{doc.page_content[:120]!r}"
+                f"\n  [{i}] {src} (p.{page})"
+            )
+
+            print(
+                f"  {doc.page_content[:500]!r}"
             )

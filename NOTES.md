@@ -120,7 +120,7 @@ CUDA graph capture), largely unavoidable on this hardware — first
 torch.compile pass alone took 102s. Compile artifacts cache to disk after
 a successful run, so subsequent starts load faster.
 
-# Pipeline Wire-Up
+## Pipeline Wire-Up
 
 Assembled the full LangGraph pipeline in src/graph.py: retrieve -> agent -> generate,
 per roadmap. Key pieces:
@@ -148,4 +148,67 @@ Two real bugs hit and fixed during this step:
 Also made QDRANT_URL and vLLM's base_url configurable via environment variables
 (os.getenv with localhost defaults) in rag.py and graph.py, so a future Docker/
 Compose setup can point them at container-network addresses without code changes.
+
+## Retrieval Improvements & Streamlit Validation
+
+Improved the Qdrant retrieval strategy after inspecting the Day 4-6 retrieval results. The previous retriever used basic similarity search with k=3, which sometimes returned highly similar or less useful chunks even after the bibliography/reference filtering fix.
+
+Updated the retriever in `src/rag.py` to use Maximal Marginal Relevance (MMR):
+
+```python
+def get_retriever(vectorstore, k: int = 5):
+    return vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": k,
+            "fetch_k": 10,
+            "lambda_mult": 0.7,
+        },
+    )
+```
+
+MMR was chosen to improve result diversity while retaining semantic relevance. Retrieval now considers a larger candidate pool (`fetch_k=10`) before selecting the final 5 chunks.
+
+Also increased the displayed retrieval preview from 120 to 500 characters to make manual inspection of retrieved context more useful.
+
+Verified the Qdrant collection after ingestion: `speaker_embedding_papers` contains exactly 54 points, matching the expected 54 chunks. No duplicate-ingestion issue was present, so no further changes to the ingestion pipeline were required.
+
+Reran retrieval tests against the actual corpus using:
+
+1. "How does the x-vector system extract speaker embeddings?"
+2. "What is the ECAPA-TDNN architecture?"
+3. "How is speaker verification evaluated in these papers?"
+4. "What is statistics pooling in the x-vector system?"
+5. "What are the main components of ECAPA-TDNN?"
+
+MMR retrieval successfully returned relevant paper content. In particular, the statistics-pooling query retrieved the x-vector section describing how mean and standard deviation are computed over frame-level outputs and aggregated across the time dimension.
+
+The x-vector extraction query also retrieved the relevant section describing extraction of the speaker embedding from the segment-level network.
+
+Some queries still returned generic or less relevant chunks alongside useful results, so retrieval quality is considered functional but not fully optimized. This is not blocking the current pipeline.
+
+### Streamlit UI Testing
+
+Moved to end-to-end validation through the Streamlit interface after confirming that ingestion, Qdrant, retrieval, and LangGraph integration are working.
+
+The Streamlit testing focus is on exposing:
+
+* User query and generated response
+* Retrieved document context
+* Source PDF and page metadata
+* Full LangGraph message trace
+* Intermediate tool/agent execution
+
+The LangGraph pipeline remains in-process for this stage. HTTP/FastAPI integration is intentionally deferred to Day 8.
+
+Validation queries planned for the Streamlit interface:
+
+* "How does the x-vector system extract speaker embeddings?"
+* "What is statistics pooling in the x-vector system?"
+* "What is 15 × 7?" — validates calculator/tool execution and trace visibility.
+* "What is the capital of France?" — validates handling of unrelated questions without unnecessarily invoking retrieval/tools.
+
+
+
+
 
