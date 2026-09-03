@@ -25,7 +25,7 @@ SOURCE_FILES = [
 ]
 
 REFERENCES_HEADING = re.compile(
-    r"(?:^|\n)\s*\*\d*\.?\s*\*?(references|bibliography)\s*\*?\s*\n",
+    r"(?:^|\n)\s*\d*\.?\s*(references|bibliography)\s*\n",
     re.IGNORECASE
 )
 
