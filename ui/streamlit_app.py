@@ -1,62 +1,33 @@
 """
-Streamlit UI 
+Streamlit UI — talks to the FastAPI backend over HTTP, and now forwards
+conversation history on every request so the backend can resolve pronoun
+references ("what's its EER?") to earlier turns.
 
-This calls the LangGraph pipeline IN-PROCESS via
-graph.invoke(), not over HTTP. The switch to a real HTTP client happens on
-Day 8 once the FastAPI wrapper exists 
+Prerequisite: FastAPI must be running separately:
+    myenv\\Scripts\\python.exe -m uvicorn src.api:app --reload --port 8000
 
-Run with:
-    streamlit run ui/streamlit_app.py
+Run this with:
+    myenv\\Scripts\\streamlit.exe run ui/streamlit_app.py
+
+History handling: /chat's ChatRequest now accepts an optional `history`
+field (list of {role, content}), forwarded from st.session_state.messages
+(everything before the current turn). api.py converts this into
+HumanMessage/AIMessage objects and prepends it to the current query before
+calling graph.ainvoke(). Confirmed working via the pronoun-only follow-up
+test that originally exposed the missing-history bug.
 """
 
-import sys
 import os
 import time
 
-# Same sys.path boilerplate noted as a Day 2 gotcha — keep it at the top of
-# every entrypoint that imports from src/.
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
-
-from src.graph import graph  # already-compiled module-level graph object
-
-
-def to_lc_messages(messages):
-    """Convert the simple {'role', 'content'} dicts in session_state into
-    LangChain message objects, matching whatever GraphState expects as
-    input (adjust if your graph.py takes raw dicts instead)."""
-    lc_messages = []
-    for m in messages:
-        if m["role"] == "user":
-            lc_messages.append(HumanMessage(content=m["content"]))
-        else:
-            lc_messages.append(AIMessage(content=m["content"]))
-    return lc_messages
-
+import requests
 
 st.set_page_config(page_title="RAG Assistant", page_icon="🔎", layout="wide")
 
-
-# ---------------------------------------------------------------------------
-# Pipeline setup
-# ---------------------------------------------------------------------------
-# Nothing to build here — importing src.graph already builds the retriever
-# and vectorstore at module level (with recreate=False, so it connects to
-# the existing Day 4 Qdrant collection rather than re-embedding). Python
-# only runs that import once per process, so this cost is paid once no
-# matter how many times Streamlit reruns the script.
-#
-# st.cache_resource still earns its keep here: it gives you the loading
-# spinner on first load and guarantees every session reuses the same graph
-# object instead of anything being rebuilt per-interaction.
-@st.cache_resource(show_spinner="Connecting to pipeline (Qdrant, retriever, agent)...")
-def get_pipeline():
-    return graph
-
-
-pipeline = get_pipeline()
+API_BASE_URL = os.getenv("RAG_API_BASE_URL", "http://localhost:8000")
+CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
+HEALTH_ENDPOINT = f"{API_BASE_URL}/health"
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +49,7 @@ with chat_col:
     st.title("🔎 RAG Assistant")
     st.caption(
         "Groq (primary) · LangGraph agent · Qdrant retrieval · "
-        "in-process call — HTTP wiring lands Day 8"
+        f"HTTP call to FastAPI backend at {API_BASE_URL}"
     )
 
     # Render chat history
@@ -99,32 +70,74 @@ with chat_col:
 
             start = time.time()
             try:
-                # In-process call — no requests.post, no FastAPI yet.
-                # Full history goes in each time (the graph itself is
-                # stateless per invoke, no checkpointing yet); retrieve_node
-                # reads state["messages"][-1] as the query, so the newest
-                # user turn always ends up last in this list.
-                result = pipeline.invoke({
-                    "messages": to_lc_messages(st.session_state.messages),
-                    "retrieved_context": "",
-                })
+                # HTTP call — replaces the Day 7 in-process pipeline.invoke().
+                # Full prior history is now sent alongside the query so the
+                # backend can resolve follow-up references correctly.
+                # Send everything before this turn as history — the
+                # message we just appended for user_input is excluded here
+                # since the backend takes it separately as `query`.
+                history_payload = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages[:-1]
+                ]
+
+                response = requests.post(
+                    CHAT_ENDPOINT,
+                    json={"query": user_input, "history": history_payload},
+                    timeout=60,
+                )
                 elapsed = time.time() - start
 
-                final_messages = result["messages"]
-                answer = final_messages[-1].content if final_messages else "(no response)"
+                if response.status_code == 429:
+                    answer = "⏳ Rate limit exceeded. Please wait a moment and try again."
+                    placeholder.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    st.session_state.last_trace = None
 
+                elif response.status_code == 400:
+                    detail = response.json().get("detail", "Bad request.")
+                    answer = f"⚠️ {detail}"
+                    placeholder.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    st.session_state.last_trace = None
+
+                elif response.status_code != 200:
+                    detail = response.json().get("detail", response.text)
+                    answer = f"⚠️ Backend error ({response.status_code}): {detail}"
+                    placeholder.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    st.session_state.last_trace = None
+
+                else:
+                    data = response.json()
+                    answer = data.get("answer", "(no response)")
+
+                    placeholder.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+                    # /chat already serializes messages to plain dicts
+                    # (model_dump()/.dict()), so the trace panel below reads
+                    # dict keys, not LangChain message attributes.
+                    st.session_state.last_trace = {
+                        "elapsed_s": round(elapsed, 2),
+                        "retrieved_context": data.get("retrieved_context"),
+                        "raw_messages": data.get("trace", []),
+                    }
+
+            except requests.exceptions.ConnectionError:
+                answer = (
+                    f"⚠️ Couldn't reach the backend at {API_BASE_URL}. "
+                    "Is `uvicorn src.api:app` running?"
+                )
                 placeholder.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.session_state.last_trace = None
 
-                # Stash whatever LangGraph exposes about intermediate steps
-                # for the panel on the right. Adjust the key(s) to match
-                # whatever your retrieve_node / agent_node actually put on
-                # GraphState (retrieved_context, tool call history, etc.)
-                st.session_state.last_trace = {
-                    "elapsed_s": round(elapsed, 2),
-                    "retrieved_context": result.get("retrieved_context"),
-                    "raw_messages": final_messages,
-                }
+            except requests.exceptions.Timeout:
+                answer = "⚠️ Request timed out waiting for the backend."
+                placeholder.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.session_state.last_trace = None
 
             except Exception as e:
                 placeholder.markdown(f"⚠️ Error: `{e}`")
@@ -137,7 +150,8 @@ with trace_col:
     if trace is None:
         st.info("Ask a question to see retrieved chunks and tool calls here.")
     else:
-        st.metric("Latency", f"{trace['elapsed_s']}s")
+        st.metric("Round-trip latency", f"{trace['elapsed_s']}s")
+        st.caption("Includes HTTP overhead, not just graph execution time.")
 
         with st.expander("Retrieved context", expanded=True):
             ctx = trace.get("retrieved_context")
@@ -148,9 +162,12 @@ with trace_col:
 
         with st.expander("Full message trace (tool calls, reasoning steps)"):
             for m in trace["raw_messages"]:
-                role = getattr(m, "type", m.__class__.__name__)
-                content = getattr(m, "content", "")
-                tool_calls = getattr(m, "tool_calls", None)
+                # These are plain dicts now (serialized server-side), not
+                # LangChain message objects — use .get(), not getattr().
+                role = m.get("type", "unknown") if isinstance(m, dict) else str(m)
+                content = m.get("content", "") if isinstance(m, dict) else ""
+                tool_calls = m.get("tool_calls") if isinstance(m, dict) else None
+
                 st.markdown(f"**{role}**")
                 if content:
                     st.text(content)
@@ -160,7 +177,7 @@ with trace_col:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: session controls
+# Sidebar: session controls + backend health
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Session")
@@ -169,8 +186,19 @@ with st.sidebar:
         st.session_state.last_trace = None
         st.rerun()
 
+    st.divider()
+    st.subheader("Backend status")
+    try:
+        health = requests.get(HEALTH_ENDPOINT, timeout=3)
+        if health.status_code == 200:
+            st.success(f"Connected — {API_BASE_URL}")
+        else:
+            st.warning(f"Backend responded with {health.status_code}")
+    except requests.exceptions.RequestException:
+        st.error(f"Can't reach {API_BASE_URL}")
+
     st.caption(
-        "This UI talks to the LangGraph pipeline in-process. "
-        "On Day 8 this becomes a `requests.post(...)` call against "
-        "a FastAPI backend instead."
+        "This UI calls the FastAPI backend over HTTP, forwarding the full "
+        "conversation history alongside each query so follow-up questions "
+        "resolve correctly."
     )
