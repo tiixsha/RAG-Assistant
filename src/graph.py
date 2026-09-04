@@ -6,9 +6,19 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import create_react_agent
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
 
 from src.llm import llm
-from src.rag import build_vectorstore, get_retriever, load_documents, chunk_documents
+from src.rag import (
+    build_vectorstore,
+    get_retriever,
+    load_documents,
+    chunk_documents,
+    get_embeddings,
+    COLLECTION_NAME,
+    QDRANT_URL,
+)
 from src.agent import calculator, doc_search
 
 
@@ -20,14 +30,33 @@ class GraphState(TypedDict):
 # -------------------------------------------------------------------
 # Load documents and build/connect to vector store
 # -------------------------------------------------------------------
+# Guard against re-embedding on every import (e.g. every uvicorn --reload
+# restart). Only run the full ingest-and-upsert path if the collection is
+# missing or empty; otherwise just connect to what's already there.
+# -------------------------------------------------------------------
 
-_documents = load_documents()
-_chunks = chunk_documents(_documents)
+_client = QdrantClient(url=QDRANT_URL)
 
-_vectorstore = build_vectorstore(
-    _chunks,
-    recreate=False,
+_collection_ready = (
+    _client.collection_exists(COLLECTION_NAME)
+    and _client.get_collection(COLLECTION_NAME).points_count > 0
 )
+
+if _collection_ready:
+    print(f"Qdrant collection '{COLLECTION_NAME}' already populated — skipping re-ingestion.")
+    _vectorstore = QdrantVectorStore(
+        client=_client,
+        collection_name=COLLECTION_NAME,
+        embedding=get_embeddings(),
+    )
+else:
+    print(f"Qdrant collection '{COLLECTION_NAME}' missing or empty — ingesting.")
+    _documents = load_documents()
+    _chunks = chunk_documents(_documents)
+    _vectorstore = build_vectorstore(
+        _chunks,
+        recreate=False,
+    )
 
 _retriever = get_retriever(
     _vectorstore,
@@ -38,7 +67,6 @@ _retriever = get_retriever(
 # -------------------------------------------------------------------
 # Retrieval tool
 # -------------------------------------------------------------------
-
 @tool
 async def retrieve_papers(query: str) -> str:
     """Search the speaker-embedding papers for relevant context."""
