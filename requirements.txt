@@ -11,11 +11,13 @@ streamlit>=1.40.0
 
 langchain-huggingface>=1.2.2
 sentence-transformers>=5.2.0
+langchain-community>=0.3.0
 
 qdrant-client>=1.10.0
 
-# (Days 8-9) for the FastAPI backend and reliability middleware:
-# fastapi>=0.115.0
-# uvicorn>=0.32.0
-# slowapi>=0.1.9
-# tenacity>=9.0.0
+
+fastapi>=0.115.0
+uvicorn>=0.32.0
+slowapi>=0.1.9
+tenacity>=9.0.0
+pypdf>=5.0.0

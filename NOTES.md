@@ -354,3 +354,44 @@ endpoint, not an oversight.
 ### PyTorch DDP
 Not applicable — this project serves models (Groq API, local vLLM), it does
 not train them. No distributed training component exists to apply DDP to.
+
+## Groq -> local vLLM fallback via manual try/except
+
+Added local_llm (Qwen2.5-1.5B via vLLM) to src/llm.py, mirroring rag.py's
+existing local model setup. Wired a manual try/except fallback into
+agent_node in graph.py: Groq is tried first, and on failure the same
+grounded prompt is retried against a second agent_executor bound to
+local_llm.
+
+Did NOT use LangChain's llm.with_fallbacks() as the roadmap's architecture
+diagram implies. Confirmed via LangGraph GitHub issue #4754: create_react_agent
+calls .bind_tools() internally, but RunnableWithFallbacks (what
+.with_fallbacks() returns) doesn't implement .bind_tools() -- passing a
+fallback-wrapped model into create_react_agent breaks or silently drops the
+fallback. Manual try/except at the graph level is the practical workaround.
+
+Two real issues found and fixed while testing this end-to-end (not just
+trusting the code):
+
+1. Groq auth failure (401, invalid key) -- confirmed the try/except actually
+   catches it and routes to the fallback executor. Verified by temporarily
+   invalidating GROQ_API_KEY in .env, rerunning, and confirming the
+   "Groq call failed..." print fires. (Key restored immediately after test.)
+
+2. vLLM fallback then failed separately: '"auto" tool choice requires
+   --enable-auto-tool-choice and --tool-call-parser to be set'. vLLM's
+   OpenAI-compatible server doesn't support tool-calling by default --
+   create_react_agent's .bind_tools() sends tool_choice="auto", which vLLM
+   rejects without an explicit tool-call parser configured for the model.
+   Fix: added --enable-auto-tool-choice --tool-call-parser hermes to the
+   vllm serve launch command. Confirmed working: Qwen2.5-1.5B-Instruct
+   answered correctly (grounded, real paper content) after this fix.
+
+Updated vLLM launch command (supersedes Day 5's version -- two new required
+flags):
+  vllm serve Qwen/Qwen2.5-1.5B-Instruct \
+    --gpu-memory-utilization 0.8 --max-model-len 2048 --port 8001 \
+    --enable-auto-tool-choice --tool-call-parser hermes
+  (plus the same VLLM_WSL2_ENABLE_PIN_MEMORY / PYTORCH_NVML_BASED_CUDA_CHECK /
+  LD_LIBRARY_PATH / VLLM_USE_FLASHINFER_SAMPLER env vars from Day 5)
+
