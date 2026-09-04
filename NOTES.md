@@ -210,5 +210,147 @@ Validation queries planned for the Streamlit interface:
 
 
 
+## Async Backend & Caching 
 
+Wrapped the LangGraph pipeline in FastAPI (`src/api.py`). `/chat` accepts a
+single `query` string and calls `await graph.ainvoke(...)`, converting the
+graph's async node functions (already `async def` in `graph.py`) into a real
+async request path end to end.
 
+Added LLM response caching via `set_llm_cache(InMemoryCache())`. Verified by
+timing two identical requests back to back — second request completed
+substantially faster than the first, confirming the cache is actually being
+hit rather than just configured.
+
+Concurrency tested with `tests/test_async.py` sending 5 distinct queries
+concurrently (deliberately different questions, not repeats — a repeated
+query would just test the cache, not real concurrency). All 5 completed
+successfully; FastAPI terminal logged 5 separate `/chat` requests as
+expected.
+
+Gotcha hit: original `api.py` draft had a duplicate `from src.graph import
+graph` import — harmless but sloppy; cleaned up in the rewrite.
+
+## Reliability: Retry & Rate Limiting 
+
+Added retry logic around `graph.ainvoke()` in `/chat`: up to 3 attempts with
+linear backoff (1s, 2s) before returning a 500. Verified the normal path
+still returns 200 after adding the retry wrapper (retry logic shouldn't
+change behavior when nothing's actually failing).
+
+Added a simple in-memory rate limiter (`deque` of request timestamps, 10
+requests / 60s window) rather than pulling in Redis or another distributed
+component — appropriately scoped for this project's size. Verified by
+sending 12 requests in quick succession; requests beyond the 10th correctly
+returned `429 Too Many Requests` with a clear `detail` message.
+
+Verified 3 concrete test cases:
+1. Normal query → 200 OK
+2. Empty query (`""`) → 400 Bad Request, `"Query cannot be empty."`
+3. 11th+ request within 60s → 429 Too Many Requests
+
+**Scoping decision:** the roadmap's third Day 9 reliability piece,
+`.with_fallbacks()` chaining Groq → local vLLM, was not implemented in this
+pass — only retry-on-the-same-provider and rate limiting were built. Noting
+this explicitly as a deliberate scope decision, not an oversight, in case
+Groq-failure resilience needs revisiting later.
+
+## Bugfix: Qdrant Duplicate-Points on Every Reimport
+
+Found during Day 8/9 testing: `graph.py`'s module-level ingestion
+(`build_vectorstore(_chunks, recreate=False)`) ran on every import of
+`src.graph` — including every `uvicorn --reload` restart during active
+development. `recreate=False` only skips *deleting* the collection; it does
+NOT skip re-embedding and re-upserting. Repeated restarts silently
+multiplied the collection: caught it at 486 points (9× the correct 54),
+confirmed via `curl http://localhost:6333/collections/speaker_embedding_papers`.
+
+Fix: guarded the ingestion block —
+```python
+_collection_ready = (
+    _client.collection_exists(COLLECTION_NAME)
+    and _client.get_collection(COLLECTION_NAME).points_count > 0
+)
+if _collection_ready:
+    _vectorstore = QdrantVectorStore(
+        client=_client, collection_name=COLLECTION_NAME, embedding=get_embeddings(),
+    )
+else:
+    _documents = load_documents()
+    _chunks = chunk_documents(_documents)
+    _vectorstore = build_vectorstore(_chunks, recreate=False)
+```
+Verified fix across two consecutive `uvicorn --reload` restarts: startup log
+correctly printed `"already populated — skipping re-ingestion"` both times,
+and `points_count` held steady at 54 rather than climbing.
+
+## Streamlit Over HTTP
+
+Rewrote `ui/streamlit_app.py` to remove the in-process `from src.graph
+import graph` entirely, replacing `pipeline.invoke(...)` with
+`requests.post()` against `/chat`. This closes out the piece of Day 7's
+checkpoint that was deliberately deferred back when the UI was first built
+("HTTP wiring lands once Day 8's FastAPI wrapper exists").
+
+Added explicit UI handling for the new failure modes FastAPI can now return:
+429 (rate limited), 400 (empty query), connection errors (backend not
+running), and timeouts — none of which existed as concepts in the
+in-process version.
+
+Trace panel updated to read plain dicts (`.get()`) instead of LangChain
+message objects (`getattr()`), since `/chat` serializes messages with
+`model_dump()`/`.dict()` before returning them.
+
+Added a `/health`-backed backend-status indicator in the sidebar.
+
+## Baseline (non-streaming, Groq via /chat)
+| Metric | Value |
+|---|---|
+| Mean latency | 3.77s |
+| p50 | 3.65s |
+| p95 | 4.84s |
+| Min / Max | 2.96s / 4.84s |
+| Throughput | 0.27 req/s (sequential) |
+
+### ONNX Export Attempt
+Attempted on the local vLLM model (Qwen/Qwen2.5-1.5B-Instruct) via
+optimum.exporters.onnx. Note: roadmap referenced this module path from an
+older optimum version — by mid-2026 Hugging Face split ONNX export into a
+separate `optimum-onnx` package; the original module path still worked once
+installed correctly. Export completed successfully (`onnx_qwen/`), but
+validation flagged numerical drift exceeding the default 1e-05 tolerance
+across all 28 transformer layers' KV-cache outputs (max diff ~0.001) —
+consistent with typical fp16/cross-framework floating-point accumulation in
+autoregressive LLM export, not a structural failure. Model is usable but
+would need relaxed tolerance or explicit accuracy testing before treating
+it as production-equivalent. Not pursued further — vLLM remains the actual
+serving path; this satisfied the roadmap's ONNX checkpoint only.
+
+### Optimization: SSE Streaming (/chat/stream)
+Added a second endpoint streaming tokens via graph.astream_events(),
+targeting perceived latency (time-to-first-token) rather than total
+throughput.
+
+| Metric | Baseline (non-streaming) | Streaming |
+|---|---|---|
+| p50 first-response time | 3.65s | 3.02s (first token) |
+| Mean | 3.77s | 4.40s (first token, skewed by 1 cold-start outlier) |
+| Mean total completion | 3.77s | 5.18s |
+
+Streaming improves median perceived latency by
+~17% (3.65s → 3.02s to first visible output) but does NOT reduce total
+generation time — total completion is measurably worse (5.18s vs 3.77s
+mean), due to per-event/per-chunk SSE overhead inherent to token-level
+streaming via astream_events(), not any tool-routing inefficiency (verified:
+added node/tool-call-chunk filters had zero effect on the numbers, confirming
+no tool-call chunks were present — these test queries triggered a single
+LLM call per turn, not the two-call ReAct pattern originally suspected).
+This is a legitimate trade-off, not a clean win: better for interactive UX,
+worse for raw throughput. /chat/stream also does not include Day 9's retry
+logic — retrying after partial output has streamed would mean duplicating
+or truncating content, so this is a deliberate reliability gap for this
+endpoint, not an oversight.
+
+### PyTorch DDP
+Not applicable — this project serves models (Groq API, local vLLM), it does
+not train them. No distributed training component exists to apply DDP to.
